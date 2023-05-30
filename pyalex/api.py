@@ -1,6 +1,7 @@
 import logging
 import warnings
 from urllib.parse import quote_plus
+import time
 
 import requests
 
@@ -18,7 +19,7 @@ class AlexConfig(dict):
         return super().__setitem__(key, value)
 
 
-config = AlexConfig(email=None, api_key=None, openalex_url="https://api.openalex.org")
+config = AlexConfig(email=None, api_key=None, openalex_url="https://api.openalex.org", http_retry_times=5)
 
 
 def _flatten_kv(d, prefix=""):
@@ -264,11 +265,32 @@ class BaseOpenAlex:
         self._add_params("cursor", cursor)
 
         params = {"api_key": config.api_key} if config.api_key else {}
-        res = requests.get(
-            self.url,
-            headers={"User-Agent": "pyalex/" + __version__, "email": config.email},
-            params=params,
-        )
+
+        for retry_count in range(config.http_retry_times + 1):
+            try:
+                res = requests.get(
+                    self.url,
+                    headers={"User-Agent": "pyalex/" + __version__, "email": config.email},
+                    params=params,
+                )
+
+                # handle query errors
+                if res.status_code == 403:
+                    res_json = res.json()
+                    if (
+                        isinstance(res_json["error"], str)
+                        and "query parameters" in res_json["error"]
+                    ):
+                        raise QueryError(res_json["message"])
+                res.raise_for_status()
+
+                break
+
+            except Exception as e:
+                print(e)
+                retry_delay = 2 ** retry_count
+                print(f"Retry in {retry_delay} s ({retry_count}/{config.http_retry_times})")
+                time.sleep(retry_delay)
 
         # handle query errors
         if res.status_code == 403:
